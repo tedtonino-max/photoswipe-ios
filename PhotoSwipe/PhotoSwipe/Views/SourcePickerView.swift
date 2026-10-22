@@ -1,9 +1,12 @@
 import SwiftUI
+import PhotosUI
 
 /// Home screen: pick what to review. Premium tile grid + year chips.
 struct SourcePickerView: View {
     @ObservedObject var vm: SwipeDeckViewModel
     @State private var showStats = false
+    @State private var startPhoto: PhotosPickerItem?
+    @State private var startPhotoError = false
 
     private let cols = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
@@ -11,6 +14,7 @@ struct SourcePickerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 title
+                startPointControls
 
                 if vm.pendingTrashCount > 0 { pendingTrashBanner }
 
@@ -39,12 +43,51 @@ struct SourcePickerView: View {
             .padding(.top, 8)
             .padding(.bottom, 28)
         }
+        .onChange(of: startPhoto) { _, item in
+            guard let item else { return }
+            defer { startPhoto = nil }
+            guard let id = item.itemIdentifier, vm.startFromPhoto(id) else {
+                startPhotoError = true
+                return
+            }
+        }
+        .alert("Startfoto niet beschikbaar", isPresented: $startPhotoError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Deze foto is niet toegankelijk voor de app. Geef volledige fototoegang in Instellingen of kies een toegestane foto.")
+        }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 4) }
         .sheet(isPresented: $showStats) {
             StatsView(vm: vm)
                 .presentationDetents([.medium, .large])
         }
+    }
+
+    private var startPointControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PhotosPicker(selection: $startPhoto, matching: .images) {
+                Label("Start vanaf een foto", systemImage: "photo.on.rectangle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.album)
+            Text("Swipen gaat van nieuw naar oud. Kies je startfoto: nieuwere foto's worden overgeslagen, zonder ze te beoordelen of te verwijderen.")
+                .font(.caption)
+                .foregroundStyle(Theme.textDim)
+            if let description = vm.startPhotoDescription {
+                Text("Actief startpunt: \(description)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Button("Startpunt wissen — beoordelingen behouden") { vm.clearStartPhoto() }
+                    .font(.caption)
+                Text("Wis het startpunt om ook nieuwe foto's weer te zien. De duplicatenscan blijft de hele bibliotheek controleren.")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textDim)
+            }
+        }
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var title: some View {

@@ -21,6 +21,10 @@ final class SwipeDeckViewModel: ObservableObject {
     @Published var albums: [PHAssetCollection] = []
     @Published var isCommitting = false
 
+    // Manual swipe start point (review history remains independent).
+    @Published private(set) var startPhotoID: String? = UserDefaults.standard.string(forKey: "swipeStart.assetID")
+    @Published private(set) var startPhotoDate: Date? = UserDefaults.standard.object(forKey: "swipeStart.date") as? Date
+
     // Picker
     @Published private(set) var facets = LibraryFacets()
     @Published private(set) var source: PhotoSource = .all
@@ -113,6 +117,43 @@ final class SwipeDeckViewModel: ObservableObject {
 
     // MARK: Source selection
 
+    var startPhotoDescription: String? {
+        guard startPhotoID != nil else { return nil }
+        return startPhotoDate?.formatted(date: .abbreviated, time: .shortened) ?? "Gekozen foto"
+    }
+
+    func clearStartPhoto() {
+        startPhotoID = nil
+        startPhotoDate = nil
+        UserDefaults.standard.removeObject(forKey: "swipeStart.assetID")
+        UserDefaults.standard.removeObject(forKey: "swipeStart.date")
+    }
+
+    @discardableResult
+    func startFromPhoto(_ id: String) -> Bool {
+        allImages = service.fetchAllPhotos()
+        guard let photo = allImages.first(where: { $0.localIdentifier == id }) else { return false }
+        startPhotoID = id
+        startPhotoDate = photo.creationDate
+        UserDefaults.standard.set(id, forKey: "swipeStart.assetID")
+        if let date = photo.creationDate { UserDefaults.standard.set(date, forKey: "swipeStart.date") }
+        else { UserDefaults.standard.removeObject(forKey: "swipeStart.date") }
+        facets = computeFacets(allImages)
+        select(.all)
+        return true
+    }
+
+    private var imagesFromStartPhoto: [PHAsset] {
+        if let id = startPhotoID, let position = allImages.firstIndex(where: { $0.localIdentifier == id }) {
+            return Array(allImages[position...])
+        }
+        if startPhotoID != nil, let date = startPhotoDate {
+            return allImages.filter { ($0.creationDate ?? .distantPast) <= date }
+        }
+        return allImages
+    }
+
+
     func select(_ source: PhotoSource) {
         self.source = source
         if source.isDuplicates {
@@ -129,7 +170,7 @@ final class SwipeDeckViewModel: ObservableObject {
         estimatedFreeBytes = 0
         freedBytes = 0
 
-        var working = allImages.filter { !store.isReviewed($0.localIdentifier) }
+        var working = imagesFromStartPhoto.filter { !store.isReviewed($0.localIdentifier) }
         switch source {
         case .all: break
         case .screenshots:
@@ -165,6 +206,7 @@ final class SwipeDeckViewModel: ObservableObject {
 
     func resetProgress() {
         store.reset()
+        clearStartPhoto()
         backToPicker()
     }
 
