@@ -229,6 +229,44 @@ final class SwipeDeckViewModel: ObservableObject {
         }
     }
 
+    // MARK: Batch selection
+
+    var batchCandidates: [PHAsset] {
+        Array(assets.dropFirst(index))
+    }
+
+    func queueBatchTrash(_ ids: Set<String>) {
+        let selected = batchCandidates.filter { ids.contains($0.localIdentifier) }
+        guard !selected.isEmpty else { return }
+        for asset in selected {
+            let id = asset.localIdentifier
+            trashStore.add(id)
+            pendingTrashIDs.insert(id)
+            store.mark(id)
+        }
+        finishBatch(Set(selected.map(\.localIdentifier)))
+    }
+
+    func addBatchToAlbum(_ ids: Set<String>, albumID: String) async throws {
+        let selected = batchCandidates.filter { ids.contains($0.localIdentifier) }
+        guard !selected.isEmpty else { return }
+        try await service.addBatch(selected, toAlbumWithLocalIdentifier: albumID)
+        for asset in selected { store.mark(asset.localIdentifier) }
+        finishBatch(Set(selected.map(\.localIdentifier)))
+    }
+
+    private func finishBatch(_ ids: Set<String>) {
+        // Batch edits create an undo boundary: no stale single-card index/history.
+        history.removeAll()
+        assets.removeAll { ids.contains($0.localIdentifier) }
+        index = min(index, assets.count)
+        service.stopCaching()
+        if index >= assets.count {
+            Task { await computeFreeEstimate() }
+            phase = .review
+        }
+    }
+
     // MARK: Albums
 
     func createAlbum(named name: String) async -> (id: String, title: String)? {
