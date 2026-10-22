@@ -1,0 +1,80 @@
+name: Build PhotoSwipe IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Xcode and project
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          test -d PhotoSwipe/PhotoSwipe.xcodeproj
+          xcodebuild -list -json \
+            -project PhotoSwipe/PhotoSwipe.xcodeproj
+
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+          mkdir -p output
+
+          xcodebuild build \
+            -project PhotoSwipe/PhotoSwipe.xcodeproj \
+            -scheme PhotoSwipe \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee output/build.log
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$GITHUB_WORKSPACE/build/Build/Products/Release-iphoneos/PhotoSwipe.app"
+          test -d "$APP_PATH"
+
+          EXECUTABLE=$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          test -s "$APP_PATH/$EXECUTABLE"
+
+          mkdir -p "$GITHUB_WORKSPACE/package/Payload"
+          ditto "$APP_PATH" \
+            "$GITHUB_WORKSPACE/package/Payload/PhotoSwipe.app"
+
+          cd "$GITHUB_WORKSPACE/package"
+          /usr/bin/zip -qry \
+            "$GITHUB_WORKSPACE/output/photoswipe.ipa" Payload
+
+          /usr/bin/unzip -t "$GITHUB_WORKSPACE/output/photoswipe.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoswipe-ipa
+          path: output/photoswipe.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoswipe-build-log
+          path: output/build.log
+          if-no-files-found: ignore
