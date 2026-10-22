@@ -9,6 +9,12 @@ struct SwipeDeckView: View {
     @ObservedObject var vm: SwipeDeckViewModel
     @State private var drag: CGSize = .zero
     @State private var showAlbumSheet = false
+    @State private var zoomScale: CGFloat = 1
+    @State private var zoomBase: CGFloat = 1
+    @State private var zoomOffset: CGSize = .zero
+    @State private var panBase: CGSize = .zero
+    @State private var pinching = false
+    @State private var suppressSwipeUntil: Date = .distantPast
 
     var body: some View {
         deck
@@ -144,11 +150,17 @@ struct SwipeDeckView: View {
                 }
             }
             if let current = vm.current {
-                PhotoCardView(asset: current, translation: drag, isTop: true)
+                PhotoCardView(asset: current, translation: drag, isTop: true,
+                              zoomScale: zoomScale, zoomOffset: zoomOffset)
                     .id(current.localIdentifier)
                     .offset(drag)
                     .rotationEffect(.degrees(Double(drag.width / 16)), anchor: .bottom)
                     .gesture(dragGesture)
+                    .simultaneousGesture(zoomGesture)
+                    .onTapGesture(count: 2) {
+                        suppressSwipeUntil = Date().addingTimeInterval(0.5)
+                        withAnimation(.cardSpring) { resetZoom() }
+                    }
                     .transition(.asymmetric(
                         insertion: .scale(scale: 0.92).combined(with: .opacity),
                         removal: .opacity))
@@ -157,12 +169,65 @@ struct SwipeDeckView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .animation(.cardSpring, value: vm.index)
+        .onChange(of: vm.current?.localIdentifier) { _, _ in
+            resetZoom()
+            suppressSwipeUntil = Date().addingTimeInterval(0.3)
+        }
+    }
+
+    private func resetZoom() {
+        zoomScale = 1
+        zoomBase = 1
+        zoomOffset = .zero
+        panBase = .zero
+        drag = .zero
+        pinching = false
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                pinching = true
+                drag = .zero
+                suppressSwipeUntil = Date().addingTimeInterval(0.5)
+                zoomScale = min(5, max(1, zoomBase * value.magnification))
+                if zoomScale <= 1.01 {
+                    zoomOffset = .zero
+                    panBase = .zero
+                }
+            }
+            .onEnded { _ in
+                zoomBase = zoomScale
+                pinching = false
+                suppressSwipeUntil = Date().addingTimeInterval(0.5)
+                if zoomScale < 1.05 {
+                    withAnimation(.cardSpring) { resetZoom() }
+                }
+            }
     }
 
     private var dragGesture: some Gesture {
         DragGesture()
-            .onChanged { drag = $0.translation }
+            .onChanged { value in
+                guard !pinching else { return }
+                if zoomScale > 1.01 {
+                    let limit = max(0, (zoomScale - 1) * 180)
+                    zoomOffset = CGSize(
+                        width: min(limit, max(-limit, panBase.width + value.translation.width)),
+                        height: min(limit, max(-limit, panBase.height + value.translation.height))
+                    )
+                    drag = .zero
+                } else if Date() >= suppressSwipeUntil {
+                    drag = value.translation
+                }
+            }
             .onEnded { value in
+                guard !pinching, zoomScale <= 1.01,
+                      Date() >= suppressSwipeUntil else {
+                    panBase = zoomOffset
+                    drag = .zero
+                    return
+                }
                 let t = value.translation
                 if t.width > Theme.swipeThreshold {
                     fling(.right, decision: .keep)
