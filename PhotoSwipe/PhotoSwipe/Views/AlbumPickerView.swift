@@ -23,7 +23,7 @@ struct AlbumPickerView: View {
                     if vm.albums.isEmpty {
                         Text("No albums yet").foregroundStyle(Theme.textDim)
                     }
-                    ForEach(vm.albums, id: \.localIdentifier) { album in
+                    ForEach(Array(vm.albums.reversed()), id: \.localIdentifier) { album in
                         Button {
                             onPick(.album(localIdentifier: album.localIdentifier,
                                           title: album.localizedTitle ?? "Album"))
