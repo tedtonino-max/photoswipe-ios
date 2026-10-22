@@ -1,80 +1,68 @@
 name: Build PhotoSwipe IPA
-
 on:
+  push:
+    paths:
+      - '.github/workflows/build-ipa.yml'
+      - 'scripts/add-start-photo.py'
+      - 'PhotoSwipe/**'
   workflow_dispatch:
-
 permissions:
-  contents: read
-
+  contents: write
 jobs:
   build:
     runs-on: macos-latest
     timeout-minutes: 30
-
     defaults:
       run:
         shell: bash
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      - name: Apply start-photo feature
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python3 scripts/add-start-photo.py 2>&1 | tee output/patch.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PhotoSwipe/PhotoSwipe/ViewModels/SwipeDeckViewModel.swift PhotoSwipe/PhotoSwipe/Views/SourcePickerView.swift
+          if ! git diff --cached --quiet; then
+            git commit -m 'Add persistent manual swipe start point [skip ci]'
+            git push origin HEAD:main
+          fi
       - name: Check Xcode and project
         run: |
           set -euo pipefail
           xcodebuild -version
           test -d PhotoSwipe/PhotoSwipe.xcodeproj
-          xcodebuild -list -json \
-            -project PhotoSwipe/PhotoSwipe.xcodeproj
-
+          xcodebuild -list -json -project PhotoSwipe/PhotoSwipe.xcodeproj
       - name: Build unsigned app
         run: |
           set -euo pipefail
           mkdir -p output
-
-          xcodebuild build \
-            -project PhotoSwipe/PhotoSwipe.xcodeproj \
-            -scheme PhotoSwipe \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$GITHUB_WORKSPACE/build" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            2>&1 | tee output/build.log
-
+          xcodebuild build -project PhotoSwipe/PhotoSwipe.xcodeproj -scheme PhotoSwipe -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$GITHUB_WORKSPACE/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | tee output/build.log
       - name: Package IPA
         run: |
           set -euo pipefail
-
           APP_PATH="$GITHUB_WORKSPACE/build/Build/Products/Release-iphoneos/PhotoSwipe.app"
           test -d "$APP_PATH"
-
-          EXECUTABLE=$(/usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
           test -s "$APP_PATH/$EXECUTABLE"
-
           mkdir -p "$GITHUB_WORKSPACE/package/Payload"
-          ditto "$APP_PATH" \
-            "$GITHUB_WORKSPACE/package/Payload/PhotoSwipe.app"
-
+          ditto "$APP_PATH" "$GITHUB_WORKSPACE/package/Payload/PhotoSwipe.app"
           cd "$GITHUB_WORKSPACE/package"
-          /usr/bin/zip -qry \
-            "$GITHUB_WORKSPACE/output/photoswipe.ipa" Payload
-
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/output/photoswipe.ipa" Payload
           /usr/bin/unzip -t "$GITHUB_WORKSPACE/output/photoswipe.ipa"
-
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: photoswipe-ipa
           path: output/photoswipe.ipa
           if-no-files-found: error
-
-      - name: Upload build log
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: photoswipe-build-log
-          path: output/build.log
+          path: output/*.log
           if-no-files-found: ignore
