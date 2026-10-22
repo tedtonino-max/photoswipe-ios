@@ -143,3 +143,19 @@ final class PhotoLibraryService {
         }
     }
 }
+
+extension PhotoLibraryService {
+    func addBatch(_ assets: [PHAsset], toAlbumWithLocalIdentifier id: String) async throws {
+        guard !assets.isEmpty else { return }
+        guard let collection = album(withLocalIdentifier: id) else {
+            throw NSError(domain: "PhotoSwipe.Batch", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Het album bestaat niet meer."])
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            guard let request = PHAssetCollectionChangeRequest(for: collection) else {
+                return
+            }
+            request.addAssets(assets as NSArray)
+        }
+    }
+}
