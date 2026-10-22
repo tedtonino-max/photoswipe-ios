@@ -7,6 +7,8 @@ struct PhotoCardView: View {
     let asset: PHAsset
     var translation: CGSize = .zero
     var isTop: Bool = true
+    var zoomScale: CGFloat = 1
+    var zoomOffset: CGSize = .zero
 
     @State private var image: UIImage?
     @State private var appeared = false
@@ -38,6 +40,8 @@ struct PhotoCardView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .opacity(appeared ? 1 : 0)
                         .scaleEffect(appeared ? 1 : 1.04)
+                        .scaleEffect(zoomScale)
+                        .offset(zoomOffset)
                 } else {
                     ProgressView().tint(.white.opacity(0.55))
                 }
