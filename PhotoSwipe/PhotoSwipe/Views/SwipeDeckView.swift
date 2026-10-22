@@ -9,15 +9,20 @@ struct SwipeDeckView: View {
     @ObservedObject var vm: SwipeDeckViewModel
     @State private var drag: CGSize = .zero
     @State private var showAlbumSheet = false
+    @State private var showBatch = false
     @State private var zoomScale: CGFloat = 1
     @State private var zoomBase: CGFloat = 1
     @State private var zoomOffset: CGSize = .zero
     @State private var panBase: CGSize = .zero
     @State private var pinching = false
+    @State private var pinchStartedAtNormal = false
     @State private var suppressSwipeUntil: Date = .distantPast
 
     var body: some View {
         deck
+            .fullScreenCover(isPresented: $showBatch) {
+                PhotoSwipeBatchView(vm: vm)
+            }
             .safeAreaInset(edge: .top, spacing: 0) { header }
             .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
             .sheet(isPresented: $showAlbumSheet) {
@@ -66,7 +71,15 @@ struct SwipeDeckView: View {
                 }
                 Spacer(minLength: 12)
                 if vm.pendingTrashCount > 0 { deleteBatchButton }
-                undoButton
+                Button {
+                openBatch()
+            } label: {
+                Image(systemName: "square.grid.3x3.fill")
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            undoButton
             }
             progressBar
         }
@@ -150,8 +163,7 @@ struct SwipeDeckView: View {
                 }
             }
             if let current = vm.current {
-                PhotoCardView(asset: current, translation: drag, isTop: true,
-                              zoomScale: zoomScale, zoomOffset: zoomOffset)
+                PhotoCardView(asset: current, translation: drag, isTop: true, zoomScale: zoomScale, zoomOffset: zoomOffset)
                     .id(current.localIdentifier)
                     .offset(drag)
                     .rotationEffect(.degrees(Double(drag.width / 16)), anchor: .bottom)
@@ -169,10 +181,7 @@ struct SwipeDeckView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .animation(.cardSpring, value: vm.index)
-        .onChange(of: vm.current?.localIdentifier) { _, _ in
-            resetZoom()
-            suppressSwipeUntil = Date().addingTimeInterval(0.3)
-        }
+        .onChange(of: vm.current?.localIdentifier) { _, _ in resetZoom() }
     }
 
     private func resetZoom() {
@@ -184,23 +193,29 @@ struct SwipeDeckView: View {
         pinching = false
     }
 
+    private func openBatch() {
+        resetZoom()
+        suppressSwipeUntil = Date().addingTimeInterval(0.5)
+        showBatch = true
+    }
+
     private var zoomGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
+                if !pinching { pinchStartedAtNormal = zoomBase <= 1.01 }
                 pinching = true
                 drag = .zero
                 suppressSwipeUntil = Date().addingTimeInterval(0.5)
                 zoomScale = min(5, max(1, zoomBase * value.magnification))
-                if zoomScale <= 1.01 {
-                    zoomOffset = .zero
-                    panBase = .zero
-                }
+                if zoomScale <= 1.01 { zoomOffset = .zero; panBase = .zero }
             }
-            .onEnded { _ in
+            .onEnded { value in
+                let openGrid = pinchStartedAtNormal && value.magnification < 0.78
                 zoomBase = zoomScale
                 pinching = false
                 suppressSwipeUntil = Date().addingTimeInterval(0.5)
-                if zoomScale < 1.05 {
+                if openGrid { openBatch() }
+                else if zoomScale < 1.05 {
                     withAnimation(.cardSpring) { resetZoom() }
                 }
             }
@@ -223,7 +238,7 @@ struct SwipeDeckView: View {
             }
             .onEnded { value in
                 guard !pinching, zoomScale <= 1.01,
-                      Date() >= suppressSwipeUntil else {
+                      Date() >= suppressSwipeUntil, !showBatch else {
                     panBase = zoomOffset
                     drag = .zero
                     return
@@ -305,5 +320,200 @@ struct SwipeDeckView: View {
             vm.decide(decision)
             drag = .zero
         }
+    }
+}
+
+
+@MainActor
+private struct PhotoSwipeBatchView: View {
+    @ObservedObject var vm: SwipeDeckViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<String> = []
+    @State private var showingAlbums = false
+    @State private var confirmingTrash = false
+    @State private var busy = false
+    @State private var errorMessage = ""
+    @State private var showingError = false
+    private let columns = [GridItem(.adaptive(minimum: 96), spacing: 5)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 5) {
+                    ForEach(vm.batchCandidates, id: \.localIdentifier) { asset in
+                        Button {
+                            toggle(asset.localIdentifier)
+                        } label: {
+                            PhotoSwipeBatchThumbnail(
+                                asset: asset,
+                                selected: selected.contains(asset.localIdentifier)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                    }
+                }
+                .padding(8)
+            }
+            .navigationTitle("\(selected.count) geselecteerd")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Gereed") { dismiss() }.disabled(busy)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button("Alles selecteren") {
+                            selected = Set(vm.batchCandidates.map(\.localIdentifier))
+                        }
+                        Button("Selectie wissen") { selected.removeAll() }
+                        Button("Reeks tussen eerste en laatste selecteren") {
+                            selectRange()
+                        }
+                        .disabled(selected.count < 2)
+                    } label: {
+                        Image(systemName: "checklist")
+                    }
+                    .disabled(busy)
+                }
+            }
+            .safeAreaInset(edge: .bottom) { batchBar }
+            .sheet(isPresented: $showingAlbums) {
+                AlbumPickerView(vm: vm) { decision in
+                    guard case let .album(id, _) = decision else { return }
+                    showingAlbums = false
+                    moveToAlbum(id)
+                }
+            }
+            .confirmationDialog(
+                "\(selected.count) foto's klaarzetten voor verwijderen?",
+                isPresented: $confirmingTrash,
+                titleVisibility: .visible
+            ) {
+                Button("In verwijderwachtrij zetten", role: .destructive) {
+                    vm.queueBatchTrash(selected)
+                    dismiss()
+                }
+                Button("Annuleren", role: .cancel) {}
+            } message: {
+                Text("Ze worden nog niet verwijderd. Gebruik daarna de prullenbak met het aantal voor de systeembevestiging.")
+            }
+            .alert("Albumactie mislukt", isPresented: $showingError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage)
+            }
+            .interactiveDismissDisabled(busy)
+        }
+    }
+
+    private var batchBar: some View {
+        VStack(spacing: 10) {
+            Text("Resterende foto's in de huidige wachtrij. Batchacties wissen de eerdere Undo-geschiedenis.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 24) {
+                Button {
+                    confirmingTrash = true
+                } label: {
+                    Label("Prullenbak", systemImage: "trash")
+                }
+                .tint(.red)
+                Spacer()
+                if busy {
+                    ProgressView()
+                } else {
+                    Button {
+                        showingAlbums = true
+                    } label: {
+                        Label("Album", systemImage: "folder.badge.plus")
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(selected.isEmpty || busy)
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+    }
+
+    private func toggle(_ id: String) {
+        if selected.contains(id) { selected.remove(id) }
+        else { selected.insert(id) }
+    }
+
+    private func selectRange() {
+        let candidates = vm.batchCandidates
+        let indices = candidates.indices.filter {
+            selected.contains(candidates[$0].localIdentifier)
+        }
+        guard let first = indices.first, let last = indices.last else { return }
+        selected = Set(candidates[first...last].map(\.localIdentifier))
+    }
+
+    private func moveToAlbum(_ id: String) {
+        guard !busy else { return }
+        busy = true
+        let ids = selected
+        Task { @MainActor in
+            do {
+                try await vm.addBatchToAlbum(ids, albumID: id)
+                busy = false
+                dismiss()
+            } catch {
+                busy = false
+                errorMessage = error.localizedDescription
+                showingError = true
+            }
+        }
+    }
+}
+
+private struct PhotoSwipeBatchThumbnail: View {
+    let asset: PHAsset
+    let selected: Bool
+    @State private var image: UIImage?
+
+    var body: some View {
+        Color.secondary.opacity(0.12)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                GeometryReader { geo in
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                    } else {
+                        ProgressView()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title2)
+                    .foregroundStyle(selected ? Color.blue : Color.white)
+                    .background(Circle().fill(Color.black.opacity(0.4)))
+                    .padding(6)
+            }
+            .overlay {
+                Rectangle().stroke(selected ? Color.blue : Color.clear, lineWidth: 3)
+            }
+            .clipped()
+            .accessibilityLabel("Foto")
+            .accessibilityValue(selected ? "Geselecteerd" : "Niet geselecteerd")
+            .task(id: asset.localIdentifier) {
+                image = nil
+                let loader = PhotoLibraryService()
+                let result = await loader.requestImage(
+                    for: asset,
+                    targetSize: CGSize(width: 360, height: 360),
+                    contentMode: .aspectFill
+                )
+                if !Task.isCancelled { image = result }
+            }
     }
 }
